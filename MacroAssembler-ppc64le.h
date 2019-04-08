@@ -4,14 +4,13 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef jit_mips_shared_MacroAssembler_mips_shared_h
-#define jit_mips_shared_MacroAssembler_mips_shared_h
+#ifndef jit_ppc64le_shared_MacroAssembler_ppc64le_shared_h
+#define jit_ppc64le_shared_MacroAssembler_ppc64le_shared_h
 
-#if defined(JS_CODEGEN_MIPS32)
-# include "jit/mips32/Assembler-mips32.h"
-#elif defined(JS_CODEGEN_MIPS64)
-# include "jit/mips64/Assembler-mips64.h"
-#endif
+#include "jit/ppc64le/Assembler-ppc64le.h"
+#include "jit/JitFrames.h"
+#include "jit/MoveResolver.h"
+#include "vm/BytecodeUtil.h"
 
 #include "jit/AtomicOp.h"
 
@@ -38,18 +37,63 @@ enum JumpKind
     ShortJump = 1
 };
 
-enum DelaySlotFill
+enum LiFlags
 {
-    DontFillDelaySlot = 0,
-    FillDelaySlot = 1
+    Li64 = 0,
+    Li48 = 1,
 };
 
-static Register CallReg = t9;
+struct ImmShiftedTag : public ImmWord
+{
+    explicit ImmShiftedTag(JSValueShiftedTag shtag)
+      : ImmWord((uintptr_t)shtag)
+    { }
 
-class MacroAssemblerMIPSShared : public Assembler
+    explicit ImmShiftedTag(JSValueType type)
+      : ImmWord(uintptr_t(JSValueShiftedTag(JSVAL_TYPE_TO_SHIFTED_TAG(type))))
+    { }
+};
+
+struct ImmTag : public Imm32
+{
+    ImmTag(JSValueTag mask)
+      : Imm32(int32_t(mask))
+    { }
+};
+
+static constexpr ValueOperand JSReturnOperand{JSReturnReg};
+
+static const int defaultShift = 3;
+static_assert(1 << defaultShift == sizeof(JS::Value), "The defaultShift is wrong");
+
+// See documentation for ScratchTagScope and ScratchTagScopeRelease in
+// MacroAssembler-x64.h.
+class ScratchTagScope : public SecondScratchRegisterScope
+{
+  public:
+    ScratchTagScope(MacroAssembler& masm, const ValueOperand&)
+      : SecondScratchRegisterScope(masm)
+    {}
+};
+
+class ScratchTagScopeRelease
+{
+    ScratchTagScope* ts_;
+  public:
+    explicit ScratchTagScopeRelease(ScratchTagScope* ts) : ts_(ts) {
+        ts_->release();
+    }
+    ~ScratchTagScopeRelease() {
+        ts_->reacquire();
+    }
+};
+
+static Register CallReg = r12; // XXX
+
+class MacroAssemblerPPC64LE : public Assembler
 {
   protected:
-    // Perform a downcast. Should be removed by Bug 996602.
+    // Perform a downcast.
     MacroAssembler& asMasm();
     const MacroAssembler& asMasm() const;
 
@@ -57,16 +101,20 @@ class MacroAssemblerMIPSShared : public Assembler
     Condition ma_cmp(Register rd, Register lhs, Imm32 imm, Condition c);
 
     void compareFloatingPoint(FloatFormat fmt, FloatRegister lhs, FloatRegister rhs,
-                              DoubleCondition c, FloatTestKind* testKind,
-                              FPConditionBit fcc = FCC0);
+                              DoubleCondition c, FloatTestKind* testKind);
 
+/* XXX: TO DO: ma_d* variants are probably superfluous */
   public:
     void ma_move(Register rd, Register rs);
 
     void ma_li(Register dest, ImmGCPtr ptr);
-
     void ma_li(Register dest, Imm32 imm);
     void ma_liPatchable(Register dest, Imm32 imm);
+
+    void ma_li(Register dest, CodeLabel* label);
+    void ma_li(Register dest, ImmWord imm);
+    void ma_liPatchable(Register dest, ImmPtr imm);
+    void ma_liPatchable(Register dest, ImmWord imm);
 
     // Shift operations
     void ma_sll(Register rd, Register rt, Imm32 shift);
@@ -81,8 +129,21 @@ class MacroAssemblerMIPSShared : public Assembler
     void ma_ror(Register rd, Register rt, Register shift);
     void ma_rol(Register rd, Register rt, Register shift);
 
+    void ma_dsll(Register rd, Register rt, Imm32 shift);
+    void ma_dsrl(Register rd, Register rt, Imm32 shift);
+    void ma_dsra(Register rd, Register rt, Imm32 shift);
+    void ma_dror(Register rd, Register rt, Imm32 shift);
+    void ma_drol(Register rd, Register rt, Imm32 shift);
+
+    void ma_dsll(Register rd, Register rt, Register shift);
+    void ma_dsrl(Register rd, Register rt, Register shift);
+    void ma_dsra(Register rd, Register rt, Register shift);
+    void ma_dror(Register rd, Register rt, Register shift);
+    void ma_drol(Register rd, Register rt, Register shift);
+
     // Negate
     void ma_negu(Register rd, Register rs);
+    void ma_dnegu(Register rd, Register rs);
 
     void ma_not(Register rd, Register rs);
 
@@ -153,7 +214,9 @@ class MacroAssemblerMIPSShared : public Assembler
     void ma_mod_mask(Register src, Register dest, Register hold, Register remain,
                      int32_t shift, Label* negZero = nullptr);
 
-    // branches when done from within mips-specific code
+    // branches when done from within platform-specific code
+    void ma_bc(Condition c, Label* l, JumpKind jumpKind = LongJump);
+
     void ma_b(Register lhs, Register rhs, Label* l, Condition c, JumpKind jumpKind = LongJump);
     void ma_b(Register lhs, Imm32 imm, Label* l, Condition c, JumpKind jumpKind = LongJump);
     void ma_b(Register lhs, ImmPtr imm, Label* l, Condition c, JumpKind jumpKind = LongJump);
@@ -175,10 +238,8 @@ class MacroAssemblerMIPSShared : public Assembler
     void ma_ls(FloatRegister dest, const BaseIndex& src);
 
     //FP branches
-    void ma_bc1s(FloatRegister lhs, FloatRegister rhs, Label* label, DoubleCondition c,
-                 JumpKind jumpKind = LongJump, FPConditionBit fcc = FCC0);
-    void ma_bc1d(FloatRegister lhs, FloatRegister rhs, Label* label, DoubleCondition c,
-                 JumpKind jumpKind = LongJump, FPConditionBit fcc = FCC0);
+    void ma_bc(FloatRegister lhs, FloatRegister rhs, Label* label, DoubleCondition c,
+                 JumpKind jumpKind = LongJump);
 
     void ma_call(ImmPtr dest);
 
@@ -188,20 +249,6 @@ class MacroAssemblerMIPSShared : public Assembler
     void ma_cmp_set(Register dst, Register lhs, Imm32 imm, Condition c);
     void ma_cmp_set_double(Register dst, FloatRegister lhs, FloatRegister rhs, DoubleCondition c);
     void ma_cmp_set_float32(Register dst, FloatRegister lhs, FloatRegister rhs, DoubleCondition c);
-
-    void moveToDoubleLo(Register src, FloatRegister dest) {
-        as_mtc1(src, dest);
-    }
-    void moveFromDoubleLo(FloatRegister src, Register dest) {
-        as_mfc1(dest, src);
-    }
-
-    void moveToFloat32(Register src, FloatRegister dest) {
-        as_mtc1(src, dest);
-    }
-    void moveFromFloat32(FloatRegister src, Register dest) {
-        as_mfc1(dest, src);
-    }
 
     // Evaluate srcDest = minmax<isMax>{Float32,Double}(srcDest, other).
     // Handle NaN specially if handleNaN is true.
@@ -230,115 +277,10 @@ class MacroAssemblerMIPSShared : public Assembler
                       Register ptrScratch, AnyRegister output, Register tmp);
     void wasmStoreImpl(const wasm::MemoryAccessDesc& access, AnyRegister value, Register memoryBase,
                        Register ptr, Register ptrScratch, Register tmp);
-};
 
-} // namespace jit
-} // namespace js
-
-#endif /* jit_mips_shared_MacroAssembler_mips_shared_h */
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=8 sts=4 et sw=4 tw=99:
- * This Source Code Form is subject to the terms of the Mozilla Public
- * License, v. 2.0. If a copy of the MPL was not distributed with this
- * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
-
-#ifndef jit_mips64_MacroAssembler_mips64_h
-#define jit_mips64_MacroAssembler_mips64_h
-
-#include "jit/JitFrames.h"
-#include "jit/mips-shared/MacroAssembler-mips-shared.h"
-#include "jit/MoveResolver.h"
-#include "vm/BytecodeUtil.h"
-
-namespace js {
-namespace jit {
-
-enum LiFlags
-{
-    Li64 = 0,
-    Li48 = 1,
-};
-
-struct ImmShiftedTag : public ImmWord
-{
-    explicit ImmShiftedTag(JSValueShiftedTag shtag)
-      : ImmWord((uintptr_t)shtag)
-    { }
-
-    explicit ImmShiftedTag(JSValueType type)
-      : ImmWord(uintptr_t(JSValueShiftedTag(JSVAL_TYPE_TO_SHIFTED_TAG(type))))
-    { }
-};
-
-struct ImmTag : public Imm32
-{
-    ImmTag(JSValueTag mask)
-      : Imm32(int32_t(mask))
-    { }
-};
-
-static constexpr ValueOperand JSReturnOperand{JSReturnReg};
-
-static const int defaultShift = 3;
-static_assert(1 << defaultShift == sizeof(JS::Value), "The defaultShift is wrong");
-
-// See documentation for ScratchTagScope and ScratchTagScopeRelease in
-// MacroAssembler-x64.h.
-
-class ScratchTagScope : public SecondScratchRegisterScope
-{
   public:
-    ScratchTagScope(MacroAssembler& masm, const ValueOperand&)
-      : SecondScratchRegisterScope(masm)
-    {}
-};
-
-class ScratchTagScopeRelease
-{
-    ScratchTagScope* ts_;
-  public:
-    explicit ScratchTagScopeRelease(ScratchTagScope* ts) : ts_(ts) {
-        ts_->release();
-    }
-    ~ScratchTagScopeRelease() {
-        ts_->reacquire();
-    }
-};
-
-class MacroAssemblerMIPS64 : public MacroAssemblerMIPSShared
-{
-  public:
-    using MacroAssemblerMIPSShared::ma_b;
-    using MacroAssemblerMIPSShared::ma_li;
-    using MacroAssemblerMIPSShared::ma_ss;
-    using MacroAssemblerMIPSShared::ma_sd;
-    using MacroAssemblerMIPSShared::ma_ls;
-    using MacroAssemblerMIPSShared::ma_ld;
-    using MacroAssemblerMIPSShared::ma_load;
-    using MacroAssemblerMIPSShared::ma_store;
-    using MacroAssemblerMIPSShared::ma_cmp_set;
-    using MacroAssemblerMIPSShared::ma_subTestOverflow;
-
-    void ma_li(Register dest, CodeLabel* label);
-    void ma_li(Register dest, ImmWord imm);
-    void ma_liPatchable(Register dest, ImmPtr imm);
-    void ma_liPatchable(Register dest, ImmWord imm, LiFlags flags = Li48);
 
     // Negate
-    void ma_dnegu(Register rd, Register rs);
-
-    // Shift operations
-    void ma_dsll(Register rd, Register rt, Imm32 shift);
-    void ma_dsrl(Register rd, Register rt, Imm32 shift);
-    void ma_dsra(Register rd, Register rt, Imm32 shift);
-    void ma_dror(Register rd, Register rt, Imm32 shift);
-    void ma_drol(Register rd, Register rt, Imm32 shift);
-
-    void ma_dsll(Register rd, Register rt, Register shift);
-    void ma_dsrl(Register rd, Register rt, Register shift);
-    void ma_dsra(Register rd, Register rt, Register shift);
-    void ma_dror(Register rd, Register rt, Register shift);
-    void ma_drol(Register rd, Register rt, Register shift);
 
     void ma_dins(Register rt, Register rs, Imm32 pos, Imm32 size);
     void ma_dext(Register rt, Register rs, Imm32 pos, Imm32 size);
@@ -375,7 +317,7 @@ class MacroAssemblerMIPS64 : public MacroAssemblerMIPSShared
     void ma_push(Register r);
 
     void branchWithCode(InstImm code, Label* label, JumpKind jumpKind);
-    // branches when done from within mips-specific code
+    // branches when done from within PPC64LE-specific code
     void ma_b(Register lhs, ImmWord imm, Label* l, Condition c, JumpKind jumpKind = LongJump);
     void ma_b(Register lhs, Address addr, Label* l, Condition c, JumpKind jumpKind = LongJump);
     void ma_b(Address addr, Imm32 imm, Label* l, Condition c, JumpKind jumpKind = LongJump);
@@ -386,7 +328,7 @@ class MacroAssemblerMIPS64 : public MacroAssemblerMIPSShared
         ma_b(ScratchRegister, rhs, l, c, jumpKind);
     }
 
-    void ma_bal(Label* l, DelaySlotFill delaySlotFill = FillDelaySlot);
+    void ma_bal(Label* l);
 
     // fp instructions
     void ma_lid(FloatRegister dest, double value);
@@ -404,33 +346,16 @@ class MacroAssemblerMIPS64 : public MacroAssemblerMIPSShared
 
     void ma_cmp_set(Register dst, Register lhs, ImmWord imm, Condition c);
     void ma_cmp_set(Register dst, Register lhs, ImmPtr imm, Condition c);
-
-    // These functions abstract the access to high part of the double precision
-    // float register. They are intended to work on both 32 bit and 64 bit
-    // floating point coprocessor.
-    void moveToDoubleHi(Register src, FloatRegister dest) {
-        as_mthc1(src, dest);
-    }
-    void moveFromDoubleHi(FloatRegister src, Register dest) {
-        as_mfhc1(dest, src);
-    }
-
-    void moveToDouble(Register src, FloatRegister dest) {
-        as_dmtc1(src, dest);
-    }
-    void moveFromDouble(FloatRegister src, Register dest) {
-        as_dmfc1(dest, src);
-    }
 };
 
 class MacroAssembler;
 
-class MacroAssemblerMIPS64Compat : public MacroAssemblerMIPS64
+class MacroAssemblerPPC64LECompat : public MacroAssemblerPPC64LE
 {
   public:
-    using MacroAssemblerMIPS64::call;
+    using MacroAssemblerPPC64LE64::call;
 
-    MacroAssemblerMIPS64Compat()
+    MacroAssemblerPPC64LE64Compat()
     { }
 
     void convertBoolToInt32(Register source, Register dest);
@@ -540,7 +465,7 @@ class MacroAssemblerMIPS64Compat : public MacroAssemblerMIPS64
         ma_pop(reg);
     }
 
-    // Emit a branch that can be toggled to a non-operation. On MIPS64 we use
+    // Emit a branch that can be toggled to a non-operation. On PPC64LE64 we use
     // "andi" instruction to toggle the branch.
     // See ToggleToJmp(), ToggleToCmp().
     CodeOffset toggledJump(Label* label);
@@ -550,7 +475,7 @@ class MacroAssemblerMIPS64Compat : public MacroAssemblerMIPS64
     CodeOffset toggledCall(JitCode* target, bool enabled);
 
     static size_t ToggledCallSize(uint8_t* code) {
-        // Six instructions used in: MacroAssemblerMIPS64Compat::toggledCall
+        // Six instructions used in: MacroAssemblerPPC64LE64Compat::toggledCall
         return 6 * sizeof(uint32_t);
     }
 
@@ -936,7 +861,7 @@ class MacroAssemblerMIPS64Compat : public MacroAssemblerMIPS64
     void store32(Imm32 src, const Address& address);
     void store32(Imm32 src, const BaseIndex& address);
 
-    // NOTE: This will use second scratch on MIPS64. Only ARM needs the
+    // NOTE: This will use second scratch on PPC64LE64. Only ARM needs the
     // implementation without second scratch.
     void store32_NoSecondScratch(Imm32 src, const Address& address) {
         store32(src, address);
@@ -1031,9 +956,9 @@ class MacroAssemblerMIPS64Compat : public MacroAssemblerMIPS64
     void profilerExitFrame();
 };
 
-typedef MacroAssemblerMIPS64Compat MacroAssemblerSpecific;
+typedef MacroAssemblerPPC64LECompat MacroAssemblerSpecific;
 
 } // namespace jit
 } // namespace js
 
-#endif /* jit_mips64_MacroAssembler_mips64_h */
+#endif /* jit_ppc64le_MacroAssembler_ppc64le_h */
