@@ -4,7 +4,7 @@ This is a temporary staging ground for work on the Firefox ppc64 JIT. Once the M
 
 ## MVP Definition
 
-The Minimum Viable Product is a POWER9 little-endian JIT with Wasm and without SIMD running with the 64-bit ABI and a 64K page size. There is certainly interest and value in big-endian and additional 64-bit PowerPC support (potentially all the way down to the 970/G5), but these can be grafted on after the fact and the SpiderMonkey JIT core is known to have endian problems which need fixing separately (see TenFourFox for more on that). Additionally, POWER9 is a viable desktop system thanks to the Raptor Talos family which developers are likely to already be using, and the new instructions in ISA 3.0 make initial porting substantially simpler on POWER9.
+The Minimum Viable Product is a POWER9 little-endian JIT with Wasm and without SIMD running with the 64-bit ELFv2 ABI and a 64K page size. There is certainly interest and value in big-endian and additional 64-bit PowerPC support (potentially all the way down to the 970/G5), but these can be grafted on after the fact and the SpiderMonkey JIT core is known to have endian problems which need fixing separately (see TenFourFox for more on that). Additionally, POWER9 is a viable desktop system thanks to the Raptor Talos family which developers are likely to already be using, and the new instructions in ISA 3.0 make initial porting substantially simpler on POWER9.
 
 SIMD is a separate issue which will not be addressed during the MVP period, and isn't necessary to get the JIT off the ground on any platform.
 
@@ -53,7 +53,7 @@ Some of this code originates from TenFourFox's IonPower JIT.
 What's remaining to do:
 
 - Check my work, because I'm an idiot
-- Define `Architecture` and exact interal JIT ABI usage, including temporary registers; see [the ABI documentation](http://refspecs.linuxfoundation.org/ELF/ppc64/PPC-elf64abi.html)
+- Define `Architecture` and exact interal JIT ABI usage, including temporary registers; see [the ABI documentation](http://openpowerfoundation.org/wp-content/uploads/resources/leabi/content/ch_preface.html)
     - Current plan is to use `r0` and `r12` as temporary registers (regenerating `r12` when making PLT-like calls back to PPC64 ABI-compliant code through `mtctr` `bctr`); `r12` or some other non-`r0` register needed as an "address" holder
     - Try to enable use of as many GPRs and FPRs as possible
     - Don't define SPRs other than `lr` outside of our JIT backend since SpiderMonkey doesn't understand the concept
