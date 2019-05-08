@@ -353,9 +353,9 @@ class MacroAssembler;
 class MacroAssemblerPPC64LECompat : public MacroAssemblerPPC64LE
 {
   public:
-    using MacroAssemblerPPC64LE64::call;
+    using MacroAssemblerPPC64LE::call;
 
-    MacroAssemblerPPC64LE64Compat()
+    MacroAssemblerPPC64LECompat()
     { }
 
     void convertBoolToInt32(Register source, Register dest);
@@ -389,7 +389,7 @@ class MacroAssemblerPPC64LECompat : public MacroAssemblerPPC64LE
     }
 
     void mov(Register src, Register dest) {
-        as_ori(dest, src, 0);
+        as_or(dest, src, src);
     }
     void mov(ImmWord imm, Register dest) {
         ma_li(dest, imm);
@@ -416,24 +416,61 @@ class MacroAssemblerPPC64LECompat : public MacroAssemblerPPC64LE
         }
     }
 
+    void hop_skip_nop_jump() {
+        // Common stanza at the end of these CTR branches.
+        as_nop();
+        as_nop();
+        as_nop(); // branch slot
+        as_bctr();
+    }
+
+    void jump(Label* label) {
+        ma_b(label);
+    }
+    void jump(Register reg) {
+        // This could be to any code, so definitely use r12.
+        xs_mtctr(reg); // new dispatch group
+        as_ori(SecondScratchReg, reg, reg); // make r12 == CTR
+        hop_skip_nop_jump();
+    }
+    void jump(const Address& address) {
+        loadPtr(address, SecondScratchReg);
+        xs_mtctr(reg); // new dispatch group
+        as_nop();
+        hop_skip_nop_jump();
+    }
+    void jump(TrampolinePtr code)
+    {
+        auto target = ImmPtr(code.value);
+        BufferOffset bo = m_buffer.nextOffset();
+        addPendingJump(bo, target, Relocation::HARDCODED);
+        ma_jump(target);
+    }
     void branch(JitCode* c) {
+        // This is to Ion code, but we still use r12 anyway.
         BufferOffset bo = m_buffer.nextOffset();
         addPendingJump(bo, ImmPtr(c->raw()), Relocation::JITCODE);
-        ma_liPatchable(ScratchRegister, ImmPtr(c->raw()));
-        as_jr(ScratchRegister);
+        ma_liPatchable(SecondScratchReg, ImmPtr(c->raw()));
+        xs_mtctr(SecondScratchReg); // new dispatch group
+        // Keep the branch out of the same dispatch group.
         as_nop();
+        hop_skip_nop_jump();
+    }
+    void jump(JitCode* code) {
+        branch(code);
     }
     void branch(const Register reg) {
-        as_jr(reg);
-        as_nop();
+        jump(reg);
     }
+
     void nop() {
         as_nop();
     }
     void ret() {
-        ma_pop(ra);
-        as_jr(ra);
-        as_nop();
+        // Pop LR and return.
+        ma_pop(ScratchReg);
+        xs_mtlr(ScratchReg);
+        as_blr();
     }
     inline void retn(Imm32 n);
     void push(Imm32 imm) {
@@ -465,17 +502,17 @@ class MacroAssemblerPPC64LECompat : public MacroAssemblerPPC64LE
         ma_pop(reg);
     }
 
-    // Emit a branch that can be toggled to a non-operation. On PPC64LE64 we use
-    // "andi" instruction to toggle the branch.
+    // Emit a branch that can be toggled to a non-operation.
     // See ToggleToJmp(), ToggleToCmp().
     CodeOffset toggledJump(Label* label);
 
-    // Emit a "jalr" or "nop" instruction. ToggleCall can be used to patch
+    // Emit a "b" or "nop" instruction. ToggleCall can be used to patch
     // this instruction.
     CodeOffset toggledCall(JitCode* target, bool enabled);
 
     static size_t ToggledCallSize(uint8_t* code) {
-        // Six instructions used in: MacroAssemblerPPC64LE64Compat::toggledCall
+        // Six instructions used in: MacroAssemblerPPC64LECompat::toggledCall
+        MOZ_ASSERT(0); // XXX!
         return 6 * sizeof(uint32_t);
     }
 
@@ -502,31 +539,6 @@ class MacroAssemblerPPC64LECompat : public MacroAssemblerPPC64LE
         m_buffer.ensureSpace(sizeof(void*));
         writeInst(-1);
         writeInst(-1);
-    }
-
-    void jump(Label* label) {
-        ma_b(label);
-    }
-    void jump(Register reg) {
-        as_jr(reg);
-        as_nop();
-    }
-    void jump(const Address& address) {
-        loadPtr(address, ScratchRegister);
-        as_jr(ScratchRegister);
-        as_nop();
-    }
-
-    void jump(JitCode* code) {
-        branch(code);
-    }
-
-    void jump(TrampolinePtr code)
-    {
-        auto target = ImmPtr(code.value);
-        BufferOffset bo = m_buffer.nextOffset();
-        addPendingJump(bo, target, Relocation::HARDCODED);
-        ma_jump(target);
     }
 
     void splitTag(Register src, Register dest) {
@@ -861,7 +873,7 @@ class MacroAssemblerPPC64LECompat : public MacroAssemblerPPC64LE
     void store32(Imm32 src, const Address& address);
     void store32(Imm32 src, const BaseIndex& address);
 
-    // NOTE: This will use second scratch on PPC64LE64. Only ARM needs the
+    // NOTE: This will use second scratch on PPC64LE. Only ARM needs the
     // implementation without second scratch.
     void store32_NoSecondScratch(Imm32 src, const Address& address) {
         store32(src, address);
@@ -936,12 +948,11 @@ class MacroAssemblerPPC64LECompat : public MacroAssemblerPPC64LE
     }
 
     void abiret() {
-        as_jr(ra);
-        as_nop();
+        as_blr();
     }
 
     void moveFloat32(FloatRegister src, FloatRegister dest) {
-        as_movs(dest, src);
+        as_fmr(dest, src);
     }
 
     void loadWasmGlobalPtr(uint32_t globalDataOffset, Register dest) {
