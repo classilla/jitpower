@@ -4,12 +4,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef jit_mips64_MacroAssembler_mips64_inl_h
-#define jit_mips64_MacroAssembler_mips64_inl_h
+#ifndef jit_ppc64le_MacroAssembler_ppc64le_inl_h
+#define jit_ppc64le_MacroAssembler_ppc64le_inl_h
 
-#include "jit/mips64/MacroAssembler-mips64.h"
-
-#include "jit/mips-shared/MacroAssembler-mips-shared-inl.h"
+#include "jit/ppc64le/MacroAssembler-ppc64le.h"
 
 namespace js {
 namespace jit {
@@ -43,13 +41,19 @@ MacroAssembler::moveGPR64ToDouble(Register64 src, FloatRegister dest)
 void
 MacroAssembler::move64To32(Register64 src, Register dest)
 {
-    ma_sll(dest, src.reg, Imm32(0));
+    // Registers are registers, so why should it be:
+    // 32 bits are treated differently?
+    // (with apologies to Depeche Mode)
+    // Seriously, XXX: should we mask the upper word off??
+    as_or(dest, src.reg, src.reg);
 }
 
 void
 MacroAssembler::move32To64ZeroExtend(Register src, Register64 dest)
 {
-    ma_dext(dest.reg, src, Imm32(0), Imm32(32));
+    // If the register was loaded with lwz or otherwise
+    // the upper word was cleared, a simple move suffices.
+    as_or(dest.reg, src, src);
 }
 
 void
@@ -69,7 +73,7 @@ MacroAssembler::move16To64SignExtend(Register src, Register64 dest)
 void
 MacroAssembler::move32To64SignExtend(Register src, Register64 dest)
 {
-    ma_sll(dest.reg, src, Imm32(0));
+    as_extsw(dest.reg, src);
 }
 
 // ===============================================================
@@ -248,37 +252,37 @@ CodeOffset
 MacroAssembler::sub32FromStackPtrWithPatch(Register dest)
 {
     CodeOffset offset = CodeOffset(currentOffset());
-    MacroAssemblerMIPSShared::ma_liPatchable(dest, Imm32(0));
-    as_dsubu(dest, StackPointer, dest);
+    MacroAssemblerPPC64LE::ma_liPatchable(dest, Imm32(0));
+    as_subf(dest, dest, StackPointer); // T = B - A
     return offset;
 }
 
 void
 MacroAssembler::patchSub32FromStackPtr(CodeOffset offset, Imm32 imm)
 {
-    Instruction* lui = (Instruction*) m_buffer.getInst(BufferOffset(offset.offset()));
-    MOZ_ASSERT(lui->extractOpcode() == ((uint32_t)op_lui >> OpcodeShift));
-    MOZ_ASSERT(lui->next()->extractOpcode() == ((uint32_t)op_ori >> OpcodeShift));
+    Instruction* lis = (Instruction*) m_buffer.getInst(BufferOffset(offset.offset()));
+    MOZ_ASSERT(lis->extractOpcode() == ((uint32_t)op_lis >> OpcodeShift));
+    MOZ_ASSERT(lis->next()->extractOpcode() == ((uint32_t)op_ori >> OpcodeShift));
 
-    MacroAssemblerMIPSShared::UpdateLuiOriValue(lui, lui->next(), imm.value);
+    MacroAssemblerPPC64LE::UpdateLisOriValue(lis, lis->next(), imm.value);
 }
 
 void
 MacroAssembler::subPtr(Register src, Register dest)
 {
-    as_dsubu(dest, dest, src);
+    as_subf(dest, src, dest); // T = B - A
 }
 
 void
 MacroAssembler::subPtr(Imm32 imm, Register dest)
 {
-    ma_dsubu(dest, dest, imm);
+    ma_dsubu(dest, dest, imm); // inverted at MacroAssembler level
 }
 
 void
 MacroAssembler::sub64(Register64 src, Register64 dest)
 {
-    as_dsubu(dest.reg, dest.reg, src.reg);
+    as_subf(dest.reg, src.reg, dest.reg);
 }
 
 void
@@ -299,7 +303,7 @@ MacroAssembler::sub64(Imm64 imm, Register64 dest)
 {
     MOZ_ASSERT(dest.reg != ScratchRegister);
     mov(ImmWord(imm.value), ScratchRegister);
-    as_dsubu(dest.reg, dest.reg, ScratchRegister);
+    as_subf(dest.reg, ScratchRegister, dest.reg); // T = B - A
 }
 
 void
@@ -307,8 +311,7 @@ MacroAssembler::mul64(Imm64 imm, const Register64& dest)
 {
     MOZ_ASSERT(dest.reg != ScratchRegister);
     mov(ImmWord(imm.value), ScratchRegister);
-    as_dmultu(dest.reg, ScratchRegister);
-    as_mflo(dest.reg);
+    as_mulld(dest.reg, ScratchRegister, dest.reg); // low order word
 }
 
 void
@@ -322,8 +325,7 @@ void
 MacroAssembler::mul64(const Register64& src, const Register64& dest, const Register temp)
 {
     MOZ_ASSERT(temp == InvalidReg);
-    as_dmultu(dest.reg, src.reg);
-    as_mflo(dest.reg);
+    as_mulld(dest.reg, src.reg, dest.reg); // low order word
 }
 
 void
@@ -342,9 +344,10 @@ MacroAssembler::mul64(const Operand& src, const Register64& dest, const Register
 void
 MacroAssembler::mulBy3(Register src, Register dest)
 {
+    // I guess this *is* better than mulli.
     MOZ_ASSERT(src != ScratchRegister);
-    as_daddu(ScratchRegister, src, src);
-    as_daddu(dest, ScratchRegister, src);
+    as_add(ScratchRegister, src, src);
+    as_add(dest, ScratchRegister, src);
 }
 
 void
@@ -352,14 +355,14 @@ MacroAssembler::inc64(AbsoluteAddress dest)
 {
     ma_li(ScratchRegister, ImmWord(uintptr_t(dest.addr)));
     as_ld(SecondScratchReg, ScratchRegister, 0);
-    as_daddiu(SecondScratchReg, SecondScratchReg, 1);
-    as_sd(SecondScratchReg, ScratchRegister, 0);
+    as_addi(SecondScratchReg, SecondScratchReg, 1);
+    as_std(SecondScratchReg, ScratchRegister, 0);
 }
 
 void
 MacroAssembler::neg64(Register64 reg)
 {
-    as_dsubu(reg.reg, zero, reg.reg);
+    as_neg(reg.reg, reg.reg);
 }
 
 // ===============================================================
@@ -786,13 +789,13 @@ MacroAssembler::cmp32Set(Assembler::Condition cond, Register lhs, Address rhs,
 }
 
 void
-MacroAssemblerMIPS64Compat::incrementInt32Value(const Address& addr)
+MacroAssemblerPPC64LECompat::incrementInt32Value(const Address& addr)
 {
     asMasm().add32(Imm32(1), addr);
 }
 
 void
-MacroAssemblerMIPS64Compat::computeEffectiveAddress(const BaseIndex& address, Register dest)
+MacroAssemblerPPC64LECompat::computeEffectiveAddress(const BaseIndex& address, Register dest)
 {
     computeScaledAddress(address, dest);
     if (address.offset)
@@ -800,7 +803,7 @@ MacroAssemblerMIPS64Compat::computeEffectiveAddress(const BaseIndex& address, Re
 }
 
 void
-MacroAssemblerMIPS64Compat::retn(Imm32 n)
+MacroAssemblerPPC64LECompat::retn(Imm32 n)
 {
     // pc <- [sp]; sp += n
     loadPtr(Address(StackPointer, 0), ra);
