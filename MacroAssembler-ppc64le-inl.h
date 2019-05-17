@@ -1370,7 +1370,7 @@ void
 MacroAssembler::branchFloat(DoubleCondition cond, FloatRegister lhs, FloatRegister rhs,
                             Label* label)
 {
-    ma_bc1s(lhs, rhs, label, cond);
+    ma_bc(lhs, rhs, label, cond);
 }
 
 void
@@ -1383,7 +1383,7 @@ void
 MacroAssembler::branchDouble(DoubleCondition cond, FloatRegister lhs, FloatRegister rhs,
                              Label* label)
 {
-    ma_bc1d(lhs, rhs, label, cond);
+    ma_bc(lhs, rhs, label, cond);
 }
 
 void
@@ -1566,7 +1566,7 @@ MacroAssembler::branchTestDoubleTruthy(bool b, FloatRegister value, Label* label
 {
     ma_lid(ScratchDoubleReg, 0.0);
     DoubleCondition cond = b ? DoubleNotEqual : DoubleEqualOrUnordered;
-    ma_bc1d(value, ScratchDoubleReg, label, cond);
+    ma_bc(value, ScratchDoubleReg, label, cond);
 }
 
 void

@@ -216,6 +216,7 @@ class MacroAssemblerPPC64LE : public Assembler
 
     // branches when done from within platform-specific code
     void ma_bc(Condition c, Label* l, JumpKind jumpKind = LongJump);
+    void ma_bc(ConditionRegister cr, Condition c, Label* l, JumpKind jumpKind = LongJump);
 
     void ma_b(Register lhs, Register rhs, Label* l, Condition c, JumpKind jumpKind = LongJump);
     void ma_b(Register lhs, Imm32 imm, Label* l, Condition c, JumpKind jumpKind = LongJump);
@@ -237,9 +238,12 @@ class MacroAssemblerPPC64LE : public Assembler
     void ma_ld(FloatRegister dest, const BaseIndex& src);
     void ma_ls(FloatRegister dest, const BaseIndex& src);
 
-    //FP branches
+    // FP branches
     void ma_bc(FloatRegister lhs, FloatRegister rhs, Label* label, DoubleCondition c,
                  JumpKind jumpKind = LongJump);
+    void ma_bc(FloatRegister lhs, FloatRegister rhs, Label* label,
+                 ConditionRegister cr,
+                 DoubleCondition c, JumpKind jumpKind = LongJump);
 
     void ma_call(ImmPtr dest);
 
