@@ -232,14 +232,12 @@ MacroAssemblerPPC64LECompat::convertInt32ToFloat32(const Address& src, FloatRegi
 void
 MacroAssemblerPPC64LECompat::movq(Register rs, Register rd)
 {
-    ADBlock();
     ma_move(rd, rs);
 }
 
 void
 MacroAssemblerPPC64LE::ma_li(Register dest, CodeLabel* label)
 {
-    ADBlock();
     BufferOffset bo = m_buffer.nextOffset();
     ma_liPatchable(dest, ImmWord(/* placeholder */ 0));
     label->patchAt()->bind(bo.getOffset());
@@ -250,7 +248,6 @@ MacroAssemblerPPC64LE::ma_li(Register dest, CodeLabel* label)
 void
 MacroAssemblerPPC64LE::ma_li(Register dest, int64_t value)
 {
-    ADBlock();
     uint64_t bits = (uint64_t)value;
     bool loweronly = true;
 
@@ -318,7 +315,6 @@ MacroAssemblerPPC64LE::ma_liPatchable(Register dest, ImmPtr imm)
 void
 MacroAssemblerPPC64LE::ma_liPatchable(Register dest, ImmWord imm, LiFlags flags)
 {
-    ADBlock();
     if (Li64 == flags) {
         // 64-bit load.
         m_buffer.ensureSpace(5 * sizeof(uint32_t));
@@ -340,7 +336,6 @@ MacroAssemblerPPC64LE::ma_liPatchable(Register dest, ImmWord imm, LiFlags flags)
 void
 MacroAssemblerPPC64LE::ma_dnegu(Register rd, Register rs)
 {
-    ADBlock();
     as_neg(rd, rs);
 }
 
@@ -348,116 +343,100 @@ MacroAssemblerPPC64LE::ma_dnegu(Register rd, Register rs)
 void
 MacroAssemblerPPC64LE::ma_dsll(Register rd, Register rt, Imm32 shift)
 {
-    if (31 < shift.value)
-      as_dsll32(rd, rt, shift.value);
-    else
-      as_dsll(rd, rt, shift.value);
+    MOZ_ASSERT(shift.value < 64);
+    as_rldicr(rd, rt, shift.value, 63-(shift.value)); // "sldi"
 }
 
 void
 MacroAssemblerPPC64LE::ma_dsrl(Register rd, Register rt, Imm32 shift)
 {
-    if (31 < shift.value)
-      as_dsrl32(rd, rt, shift.value);
-    else
-      as_dsrl(rd, rt, shift.value);
+    MOZ_ASSERT(shift.value < 64);
+    as_rldicl(rd, rt, 64-(shift.value), shift.value); // "srdi"
 }
 
 void
 MacroAssemblerPPC64LE::ma_dsra(Register rd, Register rt, Imm32 shift)
 {
-    if (31 < shift.value)
-      as_dsra32(rd, rt, shift.value);
-    else
-      as_dsra(rd, rt, shift.value);
+    MOZ_ASSERT(shift.value < 64);
+    as_sradi(rd, rt, shift.value);
 }
 
 void
 MacroAssemblerPPC64LE::ma_dror(Register rd, Register rt, Imm32 shift)
 {
-    if (31 < shift.value)
-      as_drotr32(rd, rt, shift.value);
-    else
-      as_drotr(rd, rt, shift.value);
+    MOZ_ASSERT(shift.value < 64);
+    as_rldicl(rd, rt, 64-(shift.value), 0); // "rotrdi"
 }
 
 void
 MacroAssemblerPPC64LE::ma_drol(Register rd, Register rt, Imm32 shift)
 {
-    uint32_t s =  64 - shift.value;
-
-    if (31 < s)
-      as_drotr32(rd, rt, s);
-    else
-      as_drotr(rd, rt, s);
+    MOZ_ASSERT(shift.value < 64);
+    as_rldicl(rd, rt, shift.value, 0); // "rotldi"
 }
 
 void
 MacroAssemblerPPC64LE::ma_dsll(Register rd, Register rt, Register shift)
 {
-    as_dsllv(rd, rt, shift);
+    as_sld(rd, rt, shift);
 }
 
 void
 MacroAssemblerPPC64LE::ma_dsrl(Register rd, Register rt, Register shift)
 {
-    as_dsrlv(rd, rt, shift);
+    as_srd(rd, rt, shift);
 }
 
 void
 MacroAssemblerPPC64LE::ma_dsra(Register rd, Register rt, Register shift)
 {
-    as_dsrav(rd, rt, shift);
+    as_srad(rd, rt, shift);
 }
 
 void
 MacroAssemblerPPC64LE::ma_dror(Register rd, Register rt, Register shift)
 {
-    as_drotrv(rd, rt, shift);
+    // There doesn't seem to be a direct equivalent with rldcl, so
+    // approximate in the same way we would do "rotrdi" from "rotldi."
+#if DEBUG
+    // Assert if the register is > 64 because we'd be shifting by some
+    // horrific amount if we don't check.
+    Label no_assert;
+
+    as_cmpdi(shift, 64);
+    ma_bc(Assembler::LessThan, &no_assert, ShortJump);
+    asMasm().assumeUnreachable("shifted greater than 63");
+    bind(no_assert);
+#endif
+
+    xs_li(ScratchRegister, 64);
+    as_subf(ScratchRegister, shift, ScratchRegister); // T = B - A
+    as_rldcl(rd, rt, ScratchRegister, 0); // thus 64 - shift
 }
 
 void
 MacroAssemblerPPC64LE::ma_drol(Register rd, Register rt, Register shift)
 {
-    as_dsubu(ScratchRegister, zero, shift);
-    as_drotrv(rd, rt, ScratchRegister);
+    as_rldcl(rd, rt, shift, 0); // "rotld"
 }
 
 void
 MacroAssemblerPPC64LE::ma_dins(Register rt, Register rs, Imm32 pos, Imm32 size)
 {
-    if (pos.value >= 0 && pos.value < 32) {
-        if (pos.value + size.value > 32)
-          as_dinsm(rt, rs, pos.value, size.value);
-        else
-          as_dins(rt, rs, pos.value, size.value);
-    } else {
-        as_dinsu(rt, rs, pos.value, size.value);
-    }
+    as_rldimi(rt, rs, 64-(pos.value + size.value), pos.value);
 }
 
 void
 MacroAssemblerPPC64LE::ma_dext(Register rt, Register rs, Imm32 pos, Imm32 size)
 {
-    if (pos.value >= 0 && pos.value < 32) {
-        if (size.value > 32)
-          as_dextm(rt, rs, pos.value, size.value);
-        else
-          as_dext(rt, rs, pos.value, size.value);
-    } else {
-        as_dextu(rt, rs, pos.value, size.value);
-    }
+    // MIPS dext is right-justified, so use rldicl to simulate.
+    as_rldicl(rt, rs, (pos.value + size.value), 64 - (size.value));
 }
 
 void
 MacroAssemblerPPC64LE::ma_dctz(Register rd, Register rs)
 {
-    ma_dnegu(ScratchRegister, rs);
-    as_and(rd, ScratchRegister, rs);
-    as_dclz(rd, rd);
-    ma_dnegu(SecondScratchReg, rd);
-    ma_daddu(SecondScratchReg, Imm32(0x3f));
-    as_movn(rd, SecondScratchReg, ScratchRegister);
+    as_cnttzd(rd, rs);
 }
 
 // Arithmetic-based ops.
@@ -466,18 +445,19 @@ MacroAssemblerPPC64LE::ma_dctz(Register rd, Register rs)
 void
 MacroAssemblerPPC64LE::ma_daddu(Register rd, Register rs, Imm32 imm)
 {
+    MOZ_ASSERT(rs != ScratchRegister);
     if (Imm16::IsInSignedRange(imm.value)) {
-        as_daddiu(rd, rs, imm.value);
+        as_addi(rd, rs, imm.value);
     } else {
         ma_li(ScratchRegister, imm);
-        as_daddu(rd, rs, ScratchRegister);
+        as_add(rd, rs, ScratchRegister);
     }
 }
 
 void
 MacroAssemblerPPC64LE::ma_daddu(Register rd, Register rs)
 {
-    as_daddu(rd, rd, rs);
+    as_add(rd, rd, rs);
 }
 
 void
@@ -489,41 +469,45 @@ MacroAssemblerPPC64LE::ma_daddu(Register rd, Imm32 imm)
 void
 MacroAssemblerPPC64LE::ma_addTestOverflow(Register rd, Register rs, Register rt, Label* overflow)
 {
-    as_daddu(SecondScratchReg, rs, rt);
-    as_addu(rd, rs, rt);
-    ma_b(rd, SecondScratchReg, overflow, Assembler::NotEqual);
+    // MIPS clobbers rd, so we can too.
+    ADBlock();
+    MOZ_ASSERT(rs != ScratchRegister);
+    MOZ_ASSERT(rt != ScratchRegister);
+    // Whack XER[SO].
+    xs_li(ScratchRegister, 0);
+    xs_mtxer(ScratchRegister);
+
+    as_addo_rc(rd, rs, rt); // XER[SO] -> CR0[SO]
+    ma_bc(Assembler::SO, overflow);
 }
 
 void
 MacroAssemblerPPC64LE::ma_addTestOverflow(Register rd, Register rs, Imm32 imm, Label* overflow)
 {
-    // Check for signed range because of as_daddiu
-    if (Imm16::IsInSignedRange(imm.value)) {
-        as_daddiu(SecondScratchReg, rs, imm.value);
-        as_addiu(rd, rs, imm.value);
-        ma_b(rd, SecondScratchReg, overflow, Assembler::NotEqual);
-    } else {
-        ma_li(ScratchRegister, imm);
-        ma_addTestOverflow(rd, rs, ScratchRegister, overflow);
-    }
+    // There is no addio, daddy-o, so use the regular overflow, yo.
+    ADBlock();
+    ma_li(SecondScratchReg, imm);
+    ma_addTestOverflow(rd, rs, SecondScratchReg, overflow);
 }
 
 // Subtract.
+// ma_* subtraction functions invert operand order for as_subf.
 void
 MacroAssemblerPPC64LE::ma_dsubu(Register rd, Register rs, Imm32 imm)
 {
+    MOZ_ASSERT(rs != ScratchRegister);
     if (Imm16::IsInSignedRange(-imm.value)) {
-        as_daddiu(rd, rs, -imm.value);
+        as_addi(rd, rs, -imm.value);
     } else {
         ma_li(ScratchRegister, imm);
-        as_dsubu(rd, rs, ScratchRegister);
+        as_subf(rd, ScratchRegister, rs); // T = B - A
     }
 }
 
 void
 MacroAssemblerPPC64LE::ma_dsubu(Register rd, Register rs)
 {
-    as_dsubu(rd, rd, rs);
+    as_subf(rd, rs, rd); // T = B - A
 }
 
 void
@@ -535,16 +519,28 @@ MacroAssemblerPPC64LE::ma_dsubu(Register rd, Imm32 imm)
 void
 MacroAssemblerPPC64LE::ma_subTestOverflow(Register rd, Register rs, Register rt, Label* overflow)
 {
-    as_dsubu(SecondScratchReg, rs, rt);
-    as_subu(rd, rs, rt);
-    ma_b(rd, SecondScratchReg, overflow, Assembler::NotEqual);
+    // MIPS clobbers rd, so we can too.
+    ADBlock();
+    MOZ_ASSERT(rs != ScratchRegister);
+    MOZ_ASSERT(rt != ScratchRegister);
+    // Whack XER[SO].
+    xs_li(ScratchRegister, 0);
+    xs_mtxer(ScratchRegister);
+
+    as_subfo_rc(rd, rt, rs); // T = B - A; XER[SO] -> CR0[SO]
+    ma_bc(Assembler::SO, overflow);
 }
 
 void
 MacroAssemblerPPC64LE::ma_dmult(Register rs, Imm32 imm)
 {
-    ma_li(ScratchRegister, imm);
-    as_dmult(rs, ScratchRegister);
+    if (Imm16::IsInSignedRange(imm.value)) {
+        as_mulli(rs, rs, imm.value);
+    } else {
+        MOZ_ASSERT(rs != ScratchRegister);
+        ma_li(ScratchRegister, imm);
+        as_mulld(rs, ScratchRegister);
+    }
 }
 
 // Memory.
