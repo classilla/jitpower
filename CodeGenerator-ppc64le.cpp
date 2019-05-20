@@ -309,10 +309,12 @@ CodeGenerator::visitDivOrModI64(LDivOrModI64* lir)
         // there is a snapshot, because if there isn't, Ion already knows
         // this operation is infallible (and we can avoid checking
         // for overflow, which is slightly faster).
-        masm.as_divdo(output, lhs, rhs); // T = A / B
+        masm.xs_li(output, 0);
+        masm.xs_mtxer(output); // whack XER[SO]
+        masm.as_divdo_rc(output, lhs, rhs); // T = A / B
 
         // Did we trap?
-        masm.ma_bc(Assembler::NoOverflow, &noOverflow, ShortJump);
+        masm.ma_bc(Assembler::NoSO, &noOverflow, ShortJump);
         // Yes. Determine how.
         MOZ_ASSERT(lir->canBeNegativeOverflow() || lir->canBeDivideByZero());
         if (lir->canBeNegativeOverflow()) {
@@ -364,10 +366,12 @@ CodeGenerator::visitUDivOrModI64(LUDivOrModI64* lir)
     Label noOverflow, done;
 
     if (snap) {
-        masm.as_divduo(output, lhs, rhs); // T = A / B
+        masm.xs_li(output, 0);
+        masm.xs_mtxer(output); // whack XER[SO]
+        masm.as_divduo_rc(output, lhs, rhs); // T = A / B
 
         // Did we trap?
-        masm.ma_bc(Assembler::NoOverflow, &noOverflow, ShortJump);
+        masm.ma_bc(Assembler::NoSO, &noOverflow, ShortJump);
         // Yes. Only one way that can happen here.
         MOZ_ASSERT(lir->canBeDivideByZero());
         masm.wasmTrap(wasm::Trap::IntegerDivideByZero, lir->bytecodeOffset());
@@ -1227,10 +1231,12 @@ CodeGenerator::visitDivI(LDivI* ins)
         // there is a snapshot, because if there isn't, Ion already knows
         // this operation is infallible (and we can avoid checking
         // for overflow, which is slightly faster).
-        masm.as_divwo(output, lhs, rhs); // T = A / B
+        masm.xs_li(output, 0);
+        masm.xs_mtxer(output); // whack XER[SO]
+        masm.as_divwo_rc(output, lhs, rhs); // T = A / B
 
         // Did we trap?
-        masm.ma_bc(Assembler::NoOverflow, &noOverflow, ShortJump);
+        masm.ma_bc(Assembler::NoSO, &noOverflow, ShortJump);
         // Yes. Determine how.
         MOZ_ASSERT(mir->canBeNegativeOverflow() || mir->canBeDivideByZero());
         if (mir->canBeNegativeOverflow()) {
@@ -1394,8 +1400,10 @@ CodeGenerator::visitModI(LModI* ins)
     if (mir->canBeNegativeDividend()) {
         Label noOverflow;
 
-        masm.as_divwo(dest, lhs, rhs);
-        masm.ma_bc(Assembler::NoOverflow, &noOverflow, ShortJump);
+        masm.xs_li(dest, 0);
+        masm.xs_mtxer(dest); // whack XER[SO]
+        masm.as_divwo_rc(dest, lhs, rhs);
+        masm.ma_bc(Assembler::NoSO, &noOverflow, ShortJump);
 
         // Overflowed.
         if (mir->isTruncated()) {
@@ -1956,7 +1964,7 @@ PPCRounder(MacroAssembler &masm,
     // Pull out the lower 32 bits. This is the result.
     masm.as_lwz(output, StackPointer, 0); // ENDIAN!!!
     masm.as_addi(StackPointer, StackPointer, 8);
-    masm.ma_bc(Assembler::SOBit, bailoutOverflow);
+    masm.ma_bc(Assembler::SO, bailoutOverflow);
 		
     // round() must bail out if the result is zero and the input was negative
     // (copied in CR1 from the beginning). By this point, we can assume the

@@ -72,10 +72,7 @@ MacroAssemblerPPC64LECompat::convertInt32ToDouble(Register src, FloatRegister de
 
     // Treat src as a 64-bit register (since it is) and spill to stack.
     as_stdu(src, StackPointer, -8);
-    // Keep stdu and lfd in separate dispatch groups.
-    as_nop();
-    as_nop();
-    as_nop();
+    // Power CPUs with traditional dispatch groups will need NOPs here.
 
     as_lfd(ScratchFloatReg, StackPointer, 0);
     as_fcfid(dest, ScratchFloatReg); // easy!
@@ -89,10 +86,7 @@ MacroAssemblerPPC64LECompat::convertUInt64ToDouble(Register src, FloatRegister d
     MOZ_ASSERT(dest != ScratchFloatReg);
 
     as_stdu(src, StackPointer, -8);
-    // Keep stdu and lfd in separate dispatch groups.
-    as_nop();
-    as_nop();
-    as_nop();
+    // Power CPUs with traditional dispatch groups will need NOPs here.
 
     as_lfd(ScratchFloatReg, StackPointer, 0);
     as_fcfidu(dest, ScratchFloatReg);
@@ -156,9 +150,7 @@ MacroAssemblerPPC64LECompat::convertDoubleToInt32(FloatRegister src, Register de
 
     // Spill to memory and pick up the value.
     as_stfdu(ScratchFloatReg, StackPointer, -8);
-    as_nop();
-    as_nop();
-    as_nop();
+    // Power CPUs with traditional dispatch groups will need NOPs here.
     // Pull out the lower 32 bits. ENDIAN!!!
     as_lwz(dest, StackPointer, 0); // 4 for BE
 
@@ -181,9 +173,7 @@ MacroAssemblerPPC64LECompat::convertDoubleToInt32(FloatRegister src, Register de
         // 0x0000000 00000000 = 0.0
         // Thus, if they're not the same, negative zero; bailout.
         as_stfd(src, StackPointer, 0); // reuse existing allocation
-        as_nop();
-        as_nop();
-        as_nop(); // no sleepovers without supervision
+        // Power CPUs with traditional dispatch groups will need NOPs here.
         as_lwz(ScratchRegister, StackPointer, 0);
         as_lwz(SecondScratchReg, StackPointer, 4);
         as_cmplw(ScratchRegister, SecondScratchReg);
