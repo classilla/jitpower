@@ -542,59 +542,37 @@ MacroAssemblerPPC64LE::ma_load(Register dest, Address address,
     int16_t encodedOffset;
     Register base;
 
-    if (isLoongson() && ZeroExtend != extension &&
-        !Imm16::IsInSignedRange(address.offset))
-    {
-        ma_li(ScratchRegister, Imm32(address.offset));
-        base = address.base;
+    MOZ_ASSERT(extension == ZeroExtend || extension == SignExtend);
 
-        switch (size) {
-          case SizeByte:
-            as_gslbx(dest, base, ScratchRegister, 0);
-            break;
-          case SizeHalfWord:
-            as_gslhx(dest, base, ScratchRegister, 0);
-            break;
-          case SizeWord:
-            as_gslwx(dest, base, ScratchRegister, 0);
-            break;
-          case SizeDouble:
-            as_gsldx(dest, base, ScratchRegister, 0);
-            break;
-          default:
-            MOZ_CRASH("Invalid argument for ma_load");
-        }
-        return;
-    }
-
-    if (!Imm16::IsInSignedRange(address.offset)) {
-        ma_li(ScratchRegister, Imm32(address.offset));
-        as_daddu(ScratchRegister, address.base, ScratchRegister);
-        base = ScratchRegister;
-        encodedOffset = Imm16(0).encode();
+    // XXX: Consider spinning this off into a separate function since the
+    // logic gets repeated.
+    if (!Imm16::IsInSignedRange(address.offset) || address.base == ScratchRegister) {
+        MOZ_ASSERT(address.base != SecondScratchReg);
+        ma_li(SecondScratchReg, Imm32(address.offset));
+        as_add(SecondScratchReg, address.base, SecondScratchReg);
+        base = SecondScratchReg;
+        encodedOffset = 0;
     } else {
+        MOZ_ASSERT(address.base != ScratchRegister); // "mscdfr0"
         encodedOffset = Imm16(address.offset).encode();
         base = address.base;
     }
 
     switch (size) {
       case SizeByte:
-        if (ZeroExtend == extension)
-            as_lbu(dest, base, encodedOffset);
-        else
-            as_lb(dest, base, encodedOffset);
+        as_lbz(dest, base, encodedOffset);
+        if (SignExtend == extension)
+            as_extsb(dest, dest);
         break;
       case SizeHalfWord:
-        if (ZeroExtend == extension)
-            as_lhu(dest, base, encodedOffset);
-        else
-            as_lh(dest, base, encodedOffset);
+        as_lhz(dest, base, encodedOffset);
+        if (SignExtend == extension)
+            as_extsh(dest, dest);
         break;
       case SizeWord:
-        if (ZeroExtend == extension)
-            as_lwu(dest, base, encodedOffset);
-        else
-            as_lw(dest, base, encodedOffset);
+        as_lwz(dest, base, encodedOffset);
+        if (SignExtend == extension)
+            as_extsw(dest, dest);
         break;
       case SizeDouble:
         as_ld(dest, base, encodedOffset);
@@ -611,51 +589,31 @@ MacroAssemblerPPC64LE::ma_store(Register data, Address address, LoadStoreSize si
     int16_t encodedOffset;
     Register base;
 
-    if (isLoongson() && !Imm16::IsInSignedRange(address.offset)) {
-        ma_li(ScratchRegister, Imm32(address.offset));
-        base = address.base;
-
-        switch (size) {
-          case SizeByte:
-            as_gssbx(data, base, ScratchRegister, 0);
-            break;
-          case SizeHalfWord:
-            as_gsshx(data, base, ScratchRegister, 0);
-            break;
-          case SizeWord:
-            as_gsswx(data, base, ScratchRegister, 0);
-            break;
-          case SizeDouble:
-            as_gssdx(data, base, ScratchRegister, 0);
-            break;
-          default:
-            MOZ_CRASH("Invalid argument for ma_store");
-        }
-        return;
-    }
-
-    if (!Imm16::IsInSignedRange(address.offset)) {
-        ma_li(ScratchRegister, Imm32(address.offset));
-        as_daddu(ScratchRegister, address.base, ScratchRegister);
-        base = ScratchRegister;
-        encodedOffset = Imm16(0).encode();
+    // XXX: as above
+    if (!Imm16::IsInSignedRange(address.offset) || address.base == ScratchRegister) {
+        MOZ_ASSERT(address.base != SecondScratchReg);
+        ma_li(SecondScratchReg, Imm32(address.offset));
+        as_add(SecondScratchReg, address.base, SecondScratchReg);
+        base = SecondScratchReg;
+        encodedOffset = 0;
     } else {
+        MOZ_ASSERT(address.base != ScratchRegister);
         encodedOffset = Imm16(address.offset).encode();
         base = address.base;
     }
 
     switch (size) {
       case SizeByte:
-        as_sb(data, base, encodedOffset);
+        as_stb(data, base, encodedOffset);
         break;
       case SizeHalfWord:
-        as_sh(data, base, encodedOffset);
+        as_sth(data, base, encodedOffset);
         break;
       case SizeWord:
-        as_sw(data, base, encodedOffset);
+        as_stw(data, base, encodedOffset);
         break;
       case SizeDouble:
-        as_sd(data, base, encodedOffset);
+        as_std(data, base, encodedOffset);
         break;
       default:
         MOZ_CRASH("Invalid argument for ma_store");
@@ -667,35 +625,30 @@ MacroAssemblerPPC64LECompat::computeScaledAddress(const BaseIndex& address, Regi
 {
     int32_t shift = Imm32::ShiftOf(address.scale).value;
     if (shift) {
+        MOZ_ASSERT(address.base != ScratchRegister);
         ma_dsll(ScratchRegister, address.index, Imm32(shift));
-        as_daddu(dest, address.base, ScratchRegister);
+        as_add(dest, address.base, ScratchRegister);
     } else {
-        as_daddu(dest, address.base, address.index);
+        as_add(dest, address.base, address.index);
     }
 }
 
-// Shortcut for when we know we're transferring 32 bits of data.
 void
 MacroAssemblerPPC64LE::ma_pop(Register r)
 {
+    MOZ_ASSERT(sizeof(uintptr_t) == 8);
     as_ld(r, StackPointer, 0);
-    as_daddiu(StackPointer, StackPointer, sizeof(intptr_t));
+    as_addi(StackPointer, StackPointer, sizeof(uintptr_t));
 }
 
 void
 MacroAssemblerPPC64LE::ma_push(Register r)
 {
-    if (r == sp) {
-        // Pushing sp requires one more instruction.
-        ma_move(ScratchRegister, sp);
-        r = ScratchRegister;
-    }
-
-    as_daddiu(StackPointer, StackPointer, (int32_t)-sizeof(intptr_t));
-    as_sd(r, StackPointer, 0);
+    MOZ_ASSERT(sizeof(uintptr_t) == 8);
+    as_stdu(r, StackPointer, (int32_t)-sizeof(intptr_t));
 }
 
-// Branches when done from within mips-specific code.
+// Branches when done from within PPC-specific code.
 void
 MacroAssemblerPPC64LE::ma_b(Register lhs, ImmWord imm, Label* label, Condition c, JumpKind jumpKind)
 {
