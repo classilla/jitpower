@@ -650,6 +650,73 @@ MacroAssemblerPPC64LE::ma_push(Register r)
 
 // Branches when done from within PPC-specific code.
 void
+MacroAssemblerPPC64LE::ma_bc(Condition c, Label* l, JumpKind jumpKind)
+{
+    // Shorthand for a branch based on CR0.
+    ma_bc(cr0, c, l, jumpKind);
+}
+void
+MacroAssemblerPPC64LE::ma_bc(ConditionRegister cr, Condition c, Label* l, JumpKind jumpKind)
+{
+    // Branch on the condition bit in the specified condition register.
+    spew("bc .Llabel %p\n", label);
+    if (label->bound()) {
+        int32_t offset = label->offset() - m_buffer.nextOffset().getOffset();
+
+        if (BOffImm16::IsInRange(offset))
+            jumpKind = ShortJump;
+
+        if (jumpKind == ShortJump) {
+            MOZ_ASSERT(BOffImm16::IsInRange(offset));
+            as_bc(cr, c, offset, NotLikelyB, DontLinkB); // likely bits exposed for future expansion
+            return;
+        }
+
+        // Generate a long branch stanza, but invert the sense so that we usually
+        // run a short branch, assuming the "real" branch is not taken.
+        as_bc(cr, invertCondition(c), 7 * sizeof(uint32_t), NotLikelyB, DontLinkB);
+        addLongJump(nextOffset(), BufferOffset(label->offset()));
+        ma_liPatchable(SecondScratchReg, ImmWord(LabelBase::INVALID_OFFSET)); // 5
+        xs_mtctr(SecondScratchReg); // 6
+        as_bctr(); // 7
+        return;
+    }
+
+    // Generate open jump and link it to a label.
+    // Second word holds a pointer to the next branch in label's chain.
+    uint32_t nextInChain = label->used() ? label->offset() : LabelBase::INVALID_OFFSET;
+
+    if (jumpKind == ShortJump) {
+        // Store the condition with a dummy branch, plus the next in chain. Unfortunately
+        // there is no way to make this take up less than two instructions, so we end up
+        // burning a nop at link time. Make the whole branch continuous in the buffer.
+        m_buffer.ensureSpace(2 * sizeof(uint32_t));
+
+        // Use a dummy short jump. This includes all the branch encoding, so we just have
+        // to change the offset at link time.
+        BufferOffset bo = as_bc(cr, c, 4, NotLikelyB, DontLinkB);
+        writeInst(nextInChain);
+        if (!oom())
+            label->use(bo.getOffset());
+        return;
+    }
+
+    // As above with a reverse-sense long stanza.
+    m_buffer.ensureSpace(7 * sizeof(uint32_t));
+    as_bc(cr, invertCondition(c), 7 * sizeof(uint32_t), NotLikelyB, DontLinkB);
+    BufferOffset bo = as_tw(31, ScratchReg, ScratchReg); // encode non-call
+    writeInst(nextInChain);
+    if (!oom())
+        label->use(bo.getOffset());
+    // Leave space for potential long jump.
+    as_nop();
+    as_nop();
+    as_nop();
+    as_nop(); // mtctr
+    as_nop(); // bctr
+}
+
+void
 MacroAssemblerPPC64LE::ma_b(Register lhs, ImmWord imm, Label* label, Condition c, JumpKind jumpKind)
 {
     if (imm.value <= INT32_MAX) {
@@ -684,29 +751,30 @@ MacroAssemblerPPC64LE::ma_b(Address addr, ImmGCPtr imm, Label* label, Condition 
 }
 
 void
-MacroAssemblerPPC64LE::ma_bal(Label* label, DelaySlotFill delaySlotFill)
+MacroAssemblerPPC64LE::ma_bal(Label* label)
 {
+    // Branch to a subroutine.
     spew("branch .Llabel %p\n", label);
     if (label->bound()) {
         // Generate the long jump for calls because return address has to be
         // the address after the reserved block.
         addLongJump(nextOffset(), BufferOffset(label->offset()));
-        ma_liPatchable(ScratchRegister, ImmWord(LabelBase::INVALID_OFFSET));
-        as_jalr(ScratchRegister);
-        if (delaySlotFill == FillDelaySlot)
-            as_nop();
+        // Although this is to Ion code, use r12 to keep calls "as expected."
+        ma_liPatchable(SecondScratchReg, ImmWord(LabelBase::INVALID_OFFSET));
+        xs_mtctr(SecondScratchReg);
+        as_bctr(LinkB); // bctrl
         return;
     }
 
     // Second word holds a pointer to the next branch in label's chain.
     uint32_t nextInChain = label->used() ? label->offset() : LabelBase::INVALID_OFFSET;
 
-    // Make the whole branch continous in the buffer. The '6'
-    // instructions are writing at below (contain delay slot).
+    // Keep the whole branch stanza continuous in the buffer.
     m_buffer.ensureSpace(6 * sizeof(uint32_t));
 
     spew("bal .Llabel %p\n", label);
-    BufferOffset bo = writeInst(getBranchCode(BranchIsCall).encode());
+    // Encode a trap instruction with a "link bit" (we use r1) to mark this as a call.
+    BufferOffset bo = as_tw(31, StackPointer, StackPointer);
     writeInst(nextInChain);
     if (!oom())
         label->use(bo.getOffset());
@@ -714,102 +782,8 @@ MacroAssemblerPPC64LE::ma_bal(Label* label, DelaySlotFill delaySlotFill)
     as_nop();
     as_nop();
     as_nop();
-    if (delaySlotFill == FillDelaySlot)
-        as_nop();
-}
-
-void
-MacroAssemblerPPC64LE::branchWithCode(InstImm code, Label* label, JumpKind jumpKind)
-{
-    // simply output the pointer of one label as its id,
-    // notice that after one label destructor, the pointer will be reused.
-    spew("branch .Llabel %p", label);
-    MOZ_ASSERT(code.encode() != InstImm(op_regimm, zero, rt_bgezal, BOffImm16(0)).encode());
-    InstImm inst_beq = InstImm(op_beq, zero, zero, BOffImm16(0));
-
-    if (label->bound()) {
-        int32_t offset = label->offset() - m_buffer.nextOffset().getOffset();
-
-        if (BOffImm16::IsInRange(offset))
-            jumpKind = ShortJump;
-
-        if (jumpKind == ShortJump) {
-            MOZ_ASSERT(BOffImm16::IsInRange(offset));
-            code.setBOffImm16(BOffImm16(offset));
-#ifdef JS_JITSPEW
-            decodeBranchInstAndSpew(code);
-#endif
-            writeInst(code.encode());
-            as_nop();
-            return;
-        }
-
-        if (code.encode() == inst_beq.encode()) {
-            // Handle long jump
-            addLongJump(nextOffset(), BufferOffset(label->offset()));
-            ma_liPatchable(ScratchRegister, ImmWord(LabelBase::INVALID_OFFSET));
-            as_jr(ScratchRegister);
-            as_nop();
-            return;
-        }
-
-        // Handle long conditional branch, the target offset is based on self,
-        // point to next instruction of nop at below.
-        spew("invert branch .Llabel %p", label);
-        InstImm code_r = invertBranch(code, BOffImm16(7 * sizeof(uint32_t)));
-#ifdef JS_JITSPEW
-        decodeBranchInstAndSpew(code_r);
-#endif
-        writeInst(code_r.encode());
-        // No need for a "nop" here because we can clobber scratch.
-        addLongJump(nextOffset(), BufferOffset(label->offset()));
-        ma_liPatchable(ScratchRegister, ImmWord(LabelBase::INVALID_OFFSET));
-        as_jr(ScratchRegister);
-        as_nop();
-        return;
-    }
-
-    // Generate open jump and link it to a label.
-
-    // Second word holds a pointer to the next branch in label's chain.
-    uint32_t nextInChain = label->used() ? label->offset() : LabelBase::INVALID_OFFSET;
-
-    if (jumpKind == ShortJump) {
-        // Make the whole branch continous in the buffer.
-        m_buffer.ensureSpace(2 * sizeof(uint32_t));
-
-        // Indicate that this is short jump with offset 4.
-        code.setBOffImm16(BOffImm16(4));
-#ifdef JS_JITSPEW
-        decodeBranchInstAndSpew(code);
-#endif
-        BufferOffset bo = writeInst(code.encode());
-        writeInst(nextInChain);
-        if (!oom())
-            label->use(bo.getOffset());
-        return;
-    }
-
-    bool conditional = code.encode() != inst_beq.encode();
-
-    // Make the whole branch continous in the buffer. The '7'
-    // instructions are writing at below (contain conditional nop).
-    m_buffer.ensureSpace(7 * sizeof(uint32_t));
-
-#ifdef JS_JITSPEW
-    decodeBranchInstAndSpew(code);
-#endif
-    BufferOffset bo = writeInst(code.encode());
-    writeInst(nextInChain);
-    if (!oom())
-        label->use(bo.getOffset());
-    // Leave space for potential long jump.
-    as_nop();
-    as_nop();
-    as_nop();
-    as_nop();
-    if (conditional)
-        as_nop();
+    as_nop(); // mtctr
+    as_nop(); // bctrl
 }
 
 void

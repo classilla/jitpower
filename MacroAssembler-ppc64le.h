@@ -320,7 +320,6 @@ class MacroAssemblerPPC64LE : public Assembler
     void ma_pop(Register r);
     void ma_push(Register r);
 
-    void branchWithCode(InstImm code, Label* label, JumpKind jumpKind);
     // branches when done from within PPC64LE-specific code
     void ma_b(Register lhs, ImmWord imm, Label* l, Condition c, JumpKind jumpKind = LongJump);
     void ma_b(Register lhs, Address addr, Label* l, Condition c, JumpKind jumpKind = LongJump);
