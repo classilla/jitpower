@@ -68,14 +68,17 @@ MacroAssemblerPPC64LECompat::convertInt32ToDouble(Register src, FloatRegister de
     // basic notion, but we have a better choice on POWER9 since we no
     // longer have to faff around with fake constants like we did in 32-bit).
     ADBlock();
-    MOZ_ASSERT(dest != ScratchFloatReg);
 
+#ifdef __POWER8_VECTOR__
+    as_mffprd(dest, src);
+#else
+    // Alternative with no GPR<->FPR moves.
     // Treat src as a 64-bit register (since it is) and spill to stack.
     as_stdu(src, StackPointer, -8);
     // Power CPUs with traditional dispatch groups will need NOPs here.
-
-    as_lfd(ScratchFloatReg, StackPointer, 0);
-    as_fcfid(dest, ScratchFloatReg); // easy!
+    as_lfd(dest, StackPointer, 0);
+#endif
+    as_fcfid(dest, dest); // easy!
 }
 
 void
@@ -83,13 +86,16 @@ MacroAssemblerPPC64LECompat::convertUInt64ToDouble(Register src, FloatRegister d
 {
     // Approximately the same as above, but using fcfidu.
     ADBlock();
-    MOZ_ASSERT(dest != ScratchFloatReg);
 
+#ifdef __POWER8_VECTOR__
+    as_mffprd(dest, src);
+#else
+    // Alternative with no GPR<->FPR moves.
     as_stdu(src, StackPointer, -8);
     // Power CPUs with traditional dispatch groups will need NOPs here.
-
     as_lfd(ScratchFloatReg, StackPointer, 0);
-    as_fcfidu(dest, ScratchFloatReg);
+#endif
+    as_fcfidu(dest, dest);
 }
 
 void

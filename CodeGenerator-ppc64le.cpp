@@ -486,11 +486,14 @@ CodeGenerator::visitWasmReinterpretFromI64(LWasmReinterpretFromI64* lir)
     MOZ_ASSERT(lir->mir()->type() == MIRType::Double);
     MOZ_ASSERT(lir->mir()->input()->type() == MIRType::Int64);
 
-    // No GPR<->FPR moves, so spill to memory (no mffgpr/mftgpr
-    // like POWER6 had, alas -- good times).
+#ifdef __POWER8_VECTOR__
+    masm.as_mtfprd(ToFloatRegister(lir->output()), ToRegister(lir->input()));
+#else
+    // Alternative, if we're not assuming POWER8.
     masm.as_stdu(ToRegister(lir->input()), StackPointer, -2); // extend to -8
     masm.as_lfd(ToFloatRegister(lir->output()), StackPointer, 0);
     masm.as_addi(StackPointer, StackPointer, 8);
+#endif
 }
 
 void
@@ -500,10 +503,14 @@ CodeGenerator::visitWasmReinterpretToI64(LWasmReinterpretToI64* lir)
     MOZ_ASSERT(lir->mir()->type() == MIRType::Int64);
     MOZ_ASSERT(lir->mir()->input()->type() == MIRType::Double);
 
+#ifdef __POWER8_VECTOR__
+    masm.as_mffprd(ToRegister(lir->output()), ToFloatRegister(lir->input()));
+#else
     // Sigh.
     masm.as_stfdu(ToFloatRegister(lir->input()), StackPointer, -8);
-    masm.as_ld(ToRegister(lir->input()), StackPointer, 0);
+    masm.as_ld(ToRegister(lir->output()), StackPointer, 0);
     masm.as_addi(StackPointer, StackPointer, 8);
+#endif
 }
 
 void
